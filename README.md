@@ -2,7 +2,102 @@
 
 **Université Abdelmalek Essaâdi – FST Tanger – Département Génie Informatique**
 **Master SBD – Module Deep Learning – Pr. Lotfi Elaachak**
+## Partie 1
 
+## Objectif
+Se familiariser avec PyTorch pour construire des réseaux DNN/MLP. Cette partie traite une **tâche de régression** : prédire le **prix de clôture** (`close`) d'actions de la bourse de New York.
+
+- **Dataset** : [NYSE](https://www.kaggle.com/datasets/dgawlik/nyse) – fichier `prices-split-adjusted.csv`
+- **Notebook** : `Lab1_Part1_Regression.ipynb`
+
+## Contenu du dépôt
+```
+.
+├── Lab1_Part1_Regression.ipynb        # Partie 1 (ce rapport)
+├── Lab1_Part2_Classification.ipynb    # Partie 2 (classification, maintenance prédictive)
+└── README.md
+```
+
+
+
+## Méthodologie
+
+### 1. Analyse exploratoire (EDA)
+- **851 264 lignes**, 7 colonnes (`date`, `symbol`, `open`, `close`, `low`, `high`, `volume`), **501 actions**, période du **04/01/2010 au 30/12/2016**.
+- Aucune valeur manquante, aucun doublon.
+- Prix de 1,5 $ à plus de 1 500 $ (moyenne ≈ 65 $) ; volume très asymétrique (de 0 à 860 millions) → transformation `log(1 + volume)`.
+- Visualisations : évolution du prix de clôture de quelques actions, histogrammes des variables (avec effet du log sur le volume), matrice de corrélation, boxplots (valeurs aberrantes).
+
+### 2. Pré-traitement
+- Variables d'entrée : `open`, `low`, `high`, `log_volume` ; cible : `close`.
+- **Découpage chronologique** (sans mélange) : 70 % train (595 884), 15 % validation (127 690), 15 % test (127 690).
+- **Standardisation** (`StandardScaler`) des entrées et de la cible, ajustée sur le train uniquement.
+
+### 3. Architecture
+MLP PyTorch générique : `Linear → (BatchNorm) → ReLU → (Dropout)` répété pour chaque couche cachée, puis une couche de sortie à 1 neurone. Perte **MSE**. Boucle d'entraînement maison avec historique train/validation/test, L2 (`weight_decay`), L1 (pénalité sur les poids) et early stopping.
+
+### 4. GridSearch (sklearn + skorch)
+`GridSearchCV` (3-fold, score = −MSE) sur un sous-échantillon de 10 000 lignes du train, 12 combinaisons × 3 folds = 36 entraînements.
+
+| Hyper-paramètre | Valeurs testées |
+|---|---|
+| Learning rate | 0,01 ; 0,001 |
+| Optimiseur | Adam ; SGD |
+| Architecture | (32) ; (64, 32) ; (128, 64, 32) |
+| Epochs / batch size | 20 / 128 |
+
+**Meilleure configuration** (−MSE CV = −0,000194, échelle normalisée) : **Adam, lr = 0,001, architecture (64, 32)**.
+Observations : Adam bat SGD de façon nette ; SGD avec lr = 0,001 converge trop lentement (scores de −0,005 à −0,034) ; les configurations avec Adam et lr = 0,001 ont toutes des scores proches de 0.
+
+### 5. Modèle final – courbes Loss/Epochs et R²/Epochs
+Entraînement du meilleur modèle sur tout le train (40 epochs, batch 512). Les courbes de loss (MSE normalisée) et de R² sont tracées pour le train et le test.
+
+**Résultats du meilleur modèle :**
+
+| Jeu | MSE ($²) | RMSE ($) | MAE ($) | R² | Accuracy (erreur < 5 %) |
+|---|---|---|---|---|---|
+| Train | 0,280 | 0,529 | 0,288 | 0,99992 | 99,91 % |
+| Validation | 0,687 | 0,829 | 0,413 | 0,99992 | 99,92 % |
+| Test | 0,642 | 0,801 | 0,402 | 0,99994 | 99,86 % |
+
+### 6. Techniques de régularisation
+Comparaison, avec la même architecture et les mêmes hyper-paramètres, de : Dropout (0,3), L2 (1e-3), L1 (1e-5), BatchNorm, early stopping (patience 5) et la combinaison Dropout 0,2 + L2 1e-4 + early stopping.
+
+| Modèle | RMSE test ($) | R² train | R² test | Écart R² (train − test) | Epochs | Temps (s) |
+|---|---|---|---|---|---|---|
+| Baseline (meilleur GS) | 0,801 | 0,99992 | 0,99994 | −0,00002 | 40 | 202 |
+| Dropout 0,3 | 3,369 | 0,99708 | 0,99894 | −0,00186 | 40 | 215 |
+| L2 (wd = 1e-3) | 1,120 | 0,99981 | 0,99988 | −0,00007 | 40 | 227 |
+| L1 (1e-5) | 0,857 | 0,99991 | 0,99993 | −0,00002 | 40 | 230 |
+| BatchNorm | 1,791 | 0,99945 | 0,99970 | −0,00025 | 40 | 224 |
+| **Early stopping (p = 5)** | **0,771** | 0,99992 | 0,99994 | −0,00002 | **17** | **88** |
+| Dropout + L2 + ES | 2,199 | 0,99820 | 0,99955 | −0,00135 | 11 | 59 |
+
+## Interprétation
+
+### Ce que le modèle fait bien
+- **Précision très élevée** : R² de 0,9999 sur train, validation et test ; erreur moyenne absolue d'environ **0,40 $** sur le test et plus de **99,8 %** des prédictions à moins de 5 % du prix réel, pour des prix allant de 1,5 $ à plus de 1 500 $.
+- **Bonne généralisation** : les résultats sont quasi identiques sur train, validation et test (écart de R² ≈ 0, légèrement négatif), et les courbes train et test sont superposées. Il n'y a pas d'écart de performance à corriger.
+- **Convergence très rapide** : la loss est déjà à ~0,0002 (échelle normalisée) dès la première epoch et se stabilise vers 0,0001–0,0002.
+- **GridSearch pertinent** : il identifie clairement Adam avec lr = 0,001 comme meilleur choix et écarte les configurations SGD qui convergent mal.
+- **Early stopping = meilleur compromis** : même R² que la baseline (0,99994), RMSE test légèrement meilleur (0,771 $ contre 0,801 $) avec **17 epochs au lieu de 40, soit ~57 % de temps d'entraînement en moins** (88 s contre 202 s).
+- **Toutes les techniques gardent un R² > 0,998** : la tâche est facile pour ce réseau.
+
+### Points d'attention
+- Dropout, BatchNorm et L2 **dégradent** légèrement la précision (RMSE de 1,1 à 3,4 $ contre 0,8 $) : sur un problème où le modèle ne sur-ajuste pas, contraindre le réseau ne fait que le brider. La régularisation n'apporte donc ici pas de gain de généralisation, seulement un gain de temps avec l'early stopping.
+- Le problème est **quasi linéaire** : le prix de clôture d'un jour est très proche de l'ouverture, du plus haut et du plus bas **du même jour**. Un R² de 0,9999 reflète donc cette forte dépendance entre variables intra-journalières, et non une capacité à prévoir les prix futurs. Pour une vraie prévision, il faudrait utiliser uniquement des informations passées (prix des jours précédents, fenêtre glissante, modèle séquentiel type LSTM).
+- Le RMSE en dollars est plus élevé sur validation/test que sur le train (0,80–0,83 $ contre 0,53 $) alors que le R² est identique : les périodes de test contiennent des prix plus élevés, donc des erreurs absolues plus grandes à erreur relative égale.
+- La mesure de l'erreur en dollars (RMSE, MAE) est plus parlante que le R² seul, qui est saturé.
+
+### Pistes d'amélioration
+- Utiliser des variables retardées (lag features), des moyennes mobiles, ou un modèle récurrent pour une vraie prévision.
+- Modéliser le rendement (variation relative) plutôt que le prix absolu.
+- Élargir la grille (batch size, nombre d'epochs, `AdamW`, plus de couches).
+
+## Synthèse personnelle
+Cette partie m'a permis de construire un pipeline de régression complet avec PyTorch : EDA, pré-traitement (log du volume, standardisation, découpage chronologique), MLP, boucle d'entraînement personnalisée et recherche d'hyper-paramètres avec `GridSearchCV` via `skorch`. J'ai vu que le choix de l'optimiseur et du learning rate compte plus que la profondeur du réseau, et que, sur un problème simple, les techniques de régularisation n'améliorent pas la précision, mais l'early stopping réduit fortement le temps d'entraînement. J'ai aussi compris qu'un R² proche de 1 doit être interprété avec prudence : il dépend des variables utilisées en entrée.
+
+## Partie 2
 ## Objectif
 Se familiariser avec PyTorch pour construire des réseaux DNN/MLP. Cette partie traite une **classification multi-classes** de pannes de machines (maintenance prédictive).
 
@@ -10,19 +105,7 @@ Se familiariser avec PyTorch pour construire des réseaux DNN/MLP. Cette partie 
 - **Cible** : `Failure Type` (6 classes : No Failure, Heat Dissipation Failure, Power Failure, Overstrain Failure, Tool Wear Failure, Random Failures)
 - **Notebook** : `Lab1_Part2_Classification.ipynb`
 
-## Contenu du dépôt
-```
-.
-├── Lab1_Part1_Regression.ipynb        # Partie 1 (régression, NYSE)
-├── Lab1_Part2_Classification.ipynb    # Partie 2 (ce rapport)
-└── README.md
-```
 
-## Exécution
-1. Ouvrir le notebook dans **Google Colab** ou **Kaggle**.
-2. Installer si besoin : `pip install imbalanced-learn kagglehub`.
-3. Le CSV `predictive_maintenance.csv` est cherché dans le dossier courant, puis téléchargé via `kagglehub` ; sinon l'uploader manuellement.
-4. *Run all*.
 
 ## Méthodologie
 
